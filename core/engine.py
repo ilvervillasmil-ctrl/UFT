@@ -70,36 +70,91 @@ ESTADOS_CANONICOS = (ESTADO_NO_INICIADO, ESTADO_OPERATIVO, ESTADO_DEGRADADO, EST
 # CLAVES OBLIGATORIAS DEL CONTRATO
 # ===============================================================
 
-CLAVES_OBLIGATORIAS_CONTRATO = ("esquema", "version_contrato", "version_modulo", "id", "nombre", "rol", "descripcion", "funcion", "no_hace", "autoridad", "conocimiento_exportable", "requiere", "autoriza_engine", "consultas_soportadas", "capacidades", "capacidades_meta", "reporting", "estados_validos", "invariantes", "estabilidad", "compatible_desde", "api_engine")
-
+CLAVES_OBLIGATORIAS_CONTRATO = (
+    "esquema",
+    "version_contrato",
+    "version_modulo",
+    "id",
+    "nombre",
+    "rol",
+    "descripcion",
+    "funcion",
+    "no_hace",
+    "autoridad",
+    "conocimiento_exportable",
+    "requiere",
+    "autoriza_engine",
+    "consultas_soportadas",
+    "capacidades",
+    "capacidades_meta",
+    "reporting",
+    "estados_validos",
+    "invariantes",
+    "estabilidad",
+    "compatible_desde",
+    "api_engine",
+)
 
 # ===============================================================
 # PERMISOS AUTORIZADOS POR ENGINE
 # ===============================================================
 
-PERMISOS_AUTORIZA_ENGINE = ("leer", "ejecutar", "consultar", "recombinar", "reportar", "auditar", "inventariar", "modificar", "alterar", "reescribir", "metricas", "estado", "version", "salud", "inventario", "capacidades", "errores", "advertencias", "dependencias", "contrato", "conocimiento", "diagnostico", "reporte", "crear", "eliminar", "actualizar", "validar", "procesar", "analizar", "generar", "transformar", "exportar", "importar", "respaldar", "recuperar", "sincronizar", "monitorear", "alertar")
+PERMISOS_AUTORIZA_ENGINE = (
+    "leer", "ejecutar",
+    "consultar", "recombinar",
+    "reportar", "auditar",
+    "inventariar", "modificar",
+    "alterar", "reescribir",
+    "metricas", "estado",
+    "version", "salud",
+    "inventario", "capacidades",
+    "errores", "advertencias",
+    "dependencias", "contrato",
+    "conocimiento", "diagnostico",
+    "reporte", "crear",
+    "eliminar", "actualizar",
+    "validar", "procesar",
+    "analizar", "generar",
+    "transformar", "exportar",
+    "importar", "respaldar",
+    "recuperar", "sincronizar",
+    "monitorear", "alertar",
+)
+
 
 
 # ===============================================================
 # BANDERAS DE REPORTING
 # ===============================================================
 
-BANDERAS_REPORTING = ("estado", "salud", "inventario", "capacidades", "errores", "advertencias", "dependencias", "version", "contrato", "conocimiento", "metricas", "diagnostico", "reporte")
-
+BANDERAS_REPORTING = (
+    "estado", "salud",
+    "inventario", "capacidades",
+    "errores", "advertencias",
+    "dependencias", "version",
+    "contrato", "conocimiento",
+    "metricas", "diagnostico",
+    "reporte",
+)
 
 # ===============================================================
 # METADATOS DE CAPACIDADES
 # ===============================================================
 
-CLAVES_META_CAPACIDAD = ("descripcion", "entrada", "salida")
-
+CLAVES_META_CAPACIDAD = (
+    "descripcion", "entrada",
+    "salida",
+)
 
 # ===============================================================
 # LISTAS OBLIGATORIAS DE STR
 # ===============================================================
 
-LISTAS_STR_OBLIGATORIAS = ("no_hace", "autoridad", "conocimiento_exportable", "consultas_soportadas", "invariantes")
-
+LISTAS_STR_OBLIGATORIAS = (
+    "no_hace", "autoridad",
+    "conocimiento_exportable", "consultas_soportadas",
+    "invariantes",
+)
 
 # ===============================================================
 # DEFINICIONES
@@ -276,6 +331,7 @@ class Engine:
         self._cargar_y_validar()
         self._resolver_dependencias()
         self._construir_grafo()
+        self.__validar_esquema() 
 
         # =======================================================
         # ESTADO FINAL
@@ -319,7 +375,451 @@ class Engine:
         except Exception as e:
             self.errores_arranque.append(f"{path_dir.name}: error al cargar → {type(e).__name__}: {e}")
             return None
+    # ===========================================================
+    # CARGA Y REGISTRO 1
+    # ===========================================================
 
+    def _cargar_y_validar(self) -> None:
+
+        for path_dir in self._modulos_descubiertos:
+
+            # ---------------------------------------------------
+            # LEER CONTRATO Y MATERIALIZAR MÓDULO
+            # ---------------------------------------------------
+
+            leido = self._leer_contrato(path_dir)
+
+            if leido is None:
+                continue
+
+            meta = leido["meta"]
+
+            nombre = meta.get("nombre") or leido["nombre_carpeta"]
+
+            mod = leido["modulo"]
+
+            # ---------------------------------------------------
+            # ARCHIVOS PY
+            # ---------------------------------------------------
+
+            archivos_py = sorted(
+                p for p in path_dir.rglob("*.py")
+                if p.is_file()
+            )
+
+            # ---------------------------------------------------
+            # CONTEXTO ESTRUCTURAL DEL MÓDULO
+            # ---------------------------------------------------
+
+            setattr(
+                mod,
+                "ARCHIVOS_PY",
+                archivos_py,
+            )
+
+            # ---------------------------------------------------
+            # VALIDACIÓN DEL CONTRATO
+            # ---------------------------------------------------
+
+            errores = self._validar_esquema(
+                meta,
+                nombre,
+            )
+
+            if errores:
+                self.errores_arranque.extend(errores)
+                continue
+
+
+            # ---------------------------------------------------
+            # MATERIALIZACIÓN DEL CONTENEDOR
+            # ---------------------------------------------------
+
+            cont = Contenedor(
+                meta=meta,
+                modulo=mod,
+                ruta=leido["ruta"],
+            )
+
+            # ---------------------------------------------------
+            # REGISTRO DEL MÓDULO
+            # ---------------------------------------------------
+
+            errores_dup = self.registro.registrar(
+                cont
+            )
+
+            if errores_dup:
+
+                for error in errores_dup:
+
+                    self.errores_arranque.append(
+                        f"{nombre}: {error}"
+                    )
+
+# ===========================================================
+# DECLARACIÓN 1 — RESOLUCIÓN POR EXISTENCIA CONTRACTUAL
+# ===========================================================
+
+def resolver_existencia(self, peticion: Any) -> Dict[str, Any]:
+    """
+    Determina si X puede resolverse utilizando el repertorio
+    contractual completo registrado por Engine.
+
+    El repertorio es la unión de las declaraciones y capacidades
+    existentes en todos los Contenedor registrados.
+
+    Si X puede ser atendida por las capacidades disponibles:
+        EXISTE
+
+    Si ninguna capacidad disponible puede atender X:
+        NO_EXISTE
+
+    NO_EXISTE no es un error.
+    """
+
+    if not isinstance(peticion, str):
+        return {
+            "estado": "NO_EXISTE",
+            "existe": False,
+            "peticion": peticion,
+        }
+
+    x = peticion.strip()
+
+    if not x:
+        return {
+            "estado": "NO_EXISTE",
+            "existe": False,
+            "peticion": peticion,
+        }
+
+    # -------------------------------------------------------
+    # REPERTORIO CONTRACTUAL COMPLETO
+    # -------------------------------------------------------
+
+    for cont in self.registro.contenedores.values():
+
+        # ---------------------------------------------------
+        # CAPACIDADES DECLARADAS
+        # ---------------------------------------------------
+
+        for capacidad in cont.capacidades:
+
+            if str(capacidad).strip() == x:
+                return {
+                    "estado": "EXISTE",
+                    "existe": True,
+                    "peticion": x,
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "capacidad": capacidad,
+                }
+
+        # ---------------------------------------------------
+        # DECLARACIONES CONTRACTUALES
+        # ---------------------------------------------------
+
+        for declaracion in cont.conocimiento_exportable:
+            if isinstance(declaracion, str) and declaracion.strip() == x:
+                return {
+                    "estado": "EXISTE",
+                    "existe": True,
+                    "peticion": x,
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "tipo": "conocimiento_exportable",
+                }
+
+        for consulta in cont.consultas_soportadas:
+            if isinstance(consulta, str) and consulta.strip() == x:
+                return {
+                    "estado": "EXISTE",
+                    "existe": True,
+                    "peticion": x,
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "tipo": "consulta_soportada",
+                }
+
+        for autoridad in cont.autoridad:
+            if isinstance(autoridad, str) and autoridad.strip() == x:
+                return {
+                    "estado": "EXISTE",
+                    "existe": True,
+                    "peticion": x,
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "tipo": "autoridad",
+                }
+
+        for invariante in cont.invariantes:
+            if isinstance(invariante, str) and invariante.strip() == x:
+                return {
+                    "estado": "EXISTE",
+                    "existe": True,
+                    "peticion": x,
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "tipo": "invariante",
+                }
+
+    # -------------------------------------------------------
+    # X NO EXISTE
+    # -------------------------------------------------------
+
+    return {
+        "estado": "NO_EXISTE",
+        "existe": False,
+        "peticion": x,
+        "razon": "NO_EXISTE",
+    }
+
+
+# ===========================================================
+# DECLARACIÓN 2 — RESOLUCIÓN DE PETICIÓN
+# ===========================================================
+
+def resolver_peticion(
+    self,
+    peticion: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """
+    Resuelve X utilizando únicamente capacidades reales
+    declaradas por los módulos registrados.
+
+    No existe:
+        devuelve NO_EXISTE.
+
+    Existe como capacidad:
+        ejecuta la capacidad mediante ejecutar_capacidad().
+
+    Una declaración que no sea capacidad no se ejecuta.
+    """
+
+    existencia = self.resolver_existencia(peticion)
+
+    if existencia["estado"] == "NO_EXISTE":
+        return existencia
+
+    capacidad = existencia.get("capacidad")
+
+    if capacidad is None:
+        return {
+            "estado": "NO_EXISTE",
+            "existe": False,
+            "peticion": existencia.get("peticion"),
+            "razon": "NO_EXISTE",
+        }
+
+    return self.ejecutar_capacidad(
+        existencia["modulo"],
+        capacidad,
+        *args,
+        **kwargs,
+    )
+
+    # -------------------------------------------------------
+    # UNIÓN DEL REPERTORIO CONTRACTUAL
+    # -------------------------------------------------------
+
+    for nombre, cont in self.registro.contenedores.items():
+
+        # ---------------------------------------------------
+        # CAPACIDADES
+        # ---------------------------------------------------
+
+        for capacidad in cont.capacidades.keys():
+
+            if str(capacidad).strip() == x:
+
+                coincidencias.append({
+                    "modulo": cont.nombre,
+                    "rol": cont.rol,
+                    "id": cont.id,
+                    "tipo": "capacidad",
+                    "nombre": capacidad,
+                })
+
+        # ---------------------------------------------------
+        # CONOCIMIENTO EXPORTABLE
+        # ---------------------------------------------------
+
+        for declaracion in cont.conocimiento_exportable:
+
+            if isinstance(declaracion, str):
+                if declaracion.strip() == x:
+
+                    coincidencias.append({
+                        "modulo": cont.nombre,
+                        "rol": cont.rol,
+                        "id": cont.id,
+                        "tipo": "conocimiento_exportable",
+                        "nombre": declaracion,
+                    })
+
+        # ---------------------------------------------------
+        # CONSULTAS SOPORTADAS
+        # ---------------------------------------------------
+
+        for consulta in cont.consultas_soportadas:
+
+            if isinstance(consulta, str):
+                if consulta.strip() == x:
+
+                    coincidencias.append({
+                        "modulo": cont.nombre,
+                        "rol": cont.rol,
+                        "id": cont.id,
+                        "tipo": "consulta_soportada",
+                        "nombre": consulta,
+                    })
+
+        # ---------------------------------------------------
+        # AUTORIDAD
+        # ---------------------------------------------------
+
+        for autoridad in cont.autoridad:
+
+            if isinstance(autoridad, str):
+                if autoridad.strip() == x:
+
+                    coincidencias.append({
+                        "modulo": cont.nombre,
+                        "rol": cont.rol,
+                        "id": cont.id,
+                        "tipo": "autoridad",
+                        "nombre": autoridad,
+                    })
+
+        # ---------------------------------------------------
+        # INVARIANTES
+        # ---------------------------------------------------
+
+        for invariante in cont.invariantes:
+
+            if isinstance(invariante, str):
+                if invariante.strip() == x:
+
+                    coincidencias.append({
+                        "modulo": cont.nombre,
+                        "rol": cont.rol,
+                        "id": cont.id,
+                        "tipo": "invariante",
+                        "nombre": invariante,
+                    })
+
+    # -------------------------------------------------------
+    # X EXISTE EN EL REPERTORIO
+    # -------------------------------------------------------
+
+    if coincidencias:
+
+        return {
+            "estado": "EXISTE",
+            "existe": True,
+            "peticion": x,
+            "coincidencias": coincidencias,
+        }
+
+    # -------------------------------------------------------
+    # X NO EXISTE
+    # -------------------------------------------------------
+
+    return {
+        "estado": "NO_EXISTE",
+        "existe": False,
+        "peticion": x,
+        "coincidencias": [],
+        "razon": "NO_EXISTE",
+    }
+
+
+# ===========================================================
+# DECLARACIÓN 3 — RESOLUCIÓN Y EJERCICIO
+# ===========================================================
+
+def resolver_peticion(
+    self,
+    peticion: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """
+    Resuelve X utilizando el repertorio contractual completo.
+
+    Si existe una capacidad declarada capaz de atender X,
+    Engine la ejerce mediante ejecutar_capacidad().
+
+    Si no existe ninguna capacidad contractual para X,
+    devuelve literalmente:
+
+        NO_EXISTE
+
+    No transforma X.
+    No inventa otra capacidad.
+    No obliga a un módulo a responder algo que no posee.
+    """
+
+    existencia = self.resolver_existencia(peticion)
+
+    # -------------------------------------------------------
+    # NO EXISTE
+    # -------------------------------------------------------
+
+    if existencia["estado"] == "NO_EXISTE":
+
+        return {
+            "estado": "NO_EXISTE",
+            "existe": False,
+            "peticion": existencia.get("peticion"),
+            "coincidencias": [],
+            "razon": "NO_EXISTE",
+        }
+
+    # -------------------------------------------------------
+    # EXISTE
+    # -------------------------------------------------------
+
+    capacidades = [
+        item
+        for item in existencia["coincidencias"]
+        if item["tipo"] == "capacidad"
+    ]
+
+    # -------------------------------------------------------
+    # EXISTE COMO DECLARACIÓN PERO NO COMO CAPACIDAD
+    # -------------------------------------------------------
+
+    if not capacidades:
+
+        return {
+            "estado": "EXISTE",
+            "existe": True,
+            "resoluble": False,
+            "peticion": existencia["peticion"],
+            "coincidencias": existencia["coincidencias"],
+        }
+
+    # -------------------------------------------------------
+    # EJERCER CAPACIDAD REAL
+    # -------------------------------------------------------
+
+    objetivo = capacidades[0]
+
+    return self.ejecutar_capacidad(
+        objetivo["modulo"],
+        objetivo["nombre"],
+        *args,
+        **kwargs,
+    )
     # ===========================================================
     # VALIDACIÓN DE LISTAS STR
     # ===========================================================
@@ -387,18 +887,195 @@ class Engine:
         return None
 
     # ===========================================================
-    # VALIDACIÓN COMPLETA DEL CONTRATO
+    # VALIDACIÓN DEL ESQUEMA DEL CONTRATO
     # ===========================================================
 
     def _validar_esquema(self, meta: Dict[str, Any], nombre: str) -> List[str]:
+        """
+        Valida completamente el contrato de un módulo.
+        Utiliza todas las constantes y comandos existentes en Engine.
+        """
         errores: List[str] = []
 
-        # -------------------------------------------------------
-        # ESQUEMA
-        # -------------------------------------------------------
-
+        # ===========================================================
+        # 1. ESQUEMA
+        # ===========================================================
         if meta.get("esquema") != ESQUEMA_CONTRATO_REQUERIDO:
-            errores.append(f"{nombre}: esquema '{meta.get('esquema')}' != '{ESQUEMA_CONTRATO_REQUERIDO}'")
+            errores.append(
+                f"{nombre}: esquema '{meta.get('esquema')}' != '{ESQUEMA_CONTRATO_REQUERIDO}'"
+            )
+
+        # ===========================================================
+        # 2. VERSIÓN DEL CONTRATO
+        # ===========================================================
+        vc = meta.get("version_contrato")
+        if str(vc) != VERSION_CONTRATO_REQUERIDA:
+            errores.append(
+                f"{nombre}: version_contrato '{vc}' != '{VERSION_CONTRATO_REQUERIDA}'"
+            )
+
+        # ===========================================================
+        # 3. VERSIÓN DEL MÓDULO
+        # ===========================================================
+        vm = meta.get("version_modulo")
+        if not isinstance(vm, str) or not vm.strip():
+            errores.append(
+                f"{nombre}: version_modulo debe ser str no vacío, es {type(vm).__name__}"
+            )
+
+        # ===========================================================
+        # 4. CLAVES OBLIGATORIAS
+        # ===========================================================
+        for clave in CLAVES_OBLIGATORIAS_CONTRATO:
+            if clave not in meta:
+                errores.append(f"{nombre}: falta clave obligatoria '{clave}'")
+
+        # ===========================================================
+        # 5. LISTAS DE STR OBLIGATORIAS
+        # ===========================================================
+        for clave in LISTAS_STR_OBLIGATORIAS:
+            val = meta.get(clave)
+            if not isinstance(val, list):
+                errores.append(f"{nombre}: '{clave}' debe ser list")
+                continue
+            for i, item in enumerate(val):
+                if not isinstance(item, str):
+                    errores.append(
+                        f"{nombre}: '{clave}[{i}]' debe ser str, es {type(item).__name__}"
+                    )
+
+        # ===========================================================
+        # 6. DEPENDENCIAS (requiere)
+        # ===========================================================
+        requiere = meta.get("requiere")
+        if not isinstance(requiere, list):
+            errores.append(f"{nombre}: 'requiere' debe ser list")
+        else:
+            for i, item in enumerate(requiere):
+                if not isinstance(item, str):
+                    errores.append(
+                        f"{nombre}: 'requiere[{i}]' debe ser str, es {type(item).__name__}"
+                    )
+
+        # ===========================================================
+        # 7. CAPACIDADES
+        # ===========================================================
+        caps = meta.get("capacidades")
+        if not isinstance(caps, dict):
+            errores.append(f"{nombre}: 'capacidades' debe ser dict")
+        else:
+            for k, v in caps.items():
+                if not callable(v):
+                    errores.append(
+                        f"{nombre}: capacidad '{k}' no es callable (tipo={type(v).__name__})"
+                    )
+
+        # ===========================================================
+        # 8. METADATOS DE CAPACIDADES
+        # ===========================================================
+        meta_caps = meta.get("capacidades_meta")
+        if not isinstance(meta_caps, dict):
+            errores.append(f"{nombre}: 'capacidades_meta' debe ser dict")
+        elif isinstance(caps, dict):
+            for k in caps:
+                if k not in meta_caps:
+                    errores.append(
+                        f"{nombre}: capacidad '{k}' sin entrada en capacidades_meta"
+                    )
+                    continue
+                entrada_meta = meta_caps[k]
+                if not isinstance(entrada_meta, dict):
+                    errores.append(
+                        f"{nombre}: capacidades_meta['{k}'] debe ser dict, es {type(entrada_meta).__name__}"
+                    )
+                    continue
+                for campo in CLAVES_META_CAPACIDAD:
+                    if campo not in entrada_meta:
+                        errores.append(
+                            f"{nombre}: capacidades_meta['{k}'] falta '{campo}'"
+                        )
+                    elif not isinstance(entrada_meta[campo], str):
+                        errores.append(
+                            f"{nombre}: capacidades_meta['{k}']['{campo}'] debe ser str"
+                        )
+
+        # ===========================================================
+        # 9. AUTORIZACIÓN ENGINE
+        # ===========================================================
+        auth = meta.get("autoriza_engine")
+        if not isinstance(auth, dict):
+            errores.append(f"{nombre}: 'autoriza_engine' debe ser dict")
+        else:
+            for permiso in PERMISOS_AUTORIZA_ENGINE:
+                if permiso not in auth:
+                    errores.append(
+                        f"{nombre}: autoriza_engine falta permiso '{permiso}'"
+                    )
+                elif not isinstance(auth[permiso], bool):
+                    errores.append(
+                        f"{nombre}: autoriza_engine['{permiso}'] debe ser bool, es {type(auth[permiso]).__name__}"
+                    )
+            extras = set(auth) - set(PERMISOS_AUTORIZA_ENGINE)
+            if extras:
+                errores.append(
+                    f"{nombre}: autoriza_engine permisos desconocidos: {sorted(extras)}"
+                )
+
+        # ===========================================================
+        # 10. REPORTING
+        # ===========================================================
+        reporting = meta.get("reporting")
+        if not isinstance(reporting, dict):
+            errores.append(f"{nombre}: 'reporting' debe ser dict")
+        else:
+            for bandera in BANDERAS_REPORTING:
+                if bandera not in reporting:
+                    errores.append(
+                        f"{nombre}: reporting falta bandera '{bandera}'"
+                    )
+                elif not isinstance(reporting[bandera], bool):
+                    errores.append(
+                        f"{nombre}: reporting['{bandera}'] debe ser bool, es {type(reporting[bandera]).__name__}"
+                    )
+
+        # ===========================================================
+        # 11. ESTADOS VÁLIDOS
+        # ===========================================================
+        ev = meta.get("estados_validos")
+        if not isinstance(ev, list):
+            errores.append(f"{nombre}: 'estados_validos' debe ser list")
+        elif not ev:
+            errores.append(f"{nombre}: 'estados_validos' no puede estar vacío")
+        else:
+            for i, est in enumerate(ev):
+                if not isinstance(est, str):
+                    errores.append(
+                        f"{nombre}: estados_validos[{i}] debe ser str"
+                    )
+                elif est not in ESTADOS_CANONICOS:
+                    errores.append(
+                        f"{nombre}: estados_validos[{i}]='{est}' no es canónico. Admitidos: {ESTADOS_CANONICOS}"
+                    )
+
+        # ===========================================================
+        # 12. API ENGINE
+        # ===========================================================
+        err_api = self._comparar_api(str(meta.get("api_engine", "")))
+        if err_api:
+            errores.append(f"{nombre}: {err_api}")
+
+        # ===========================================================
+        # 13. COMPATIBILIDAD
+        # ===========================================================
+        err_cd = self._comparar_compatible_desde(
+            str(meta.get("compatible_desde", "")), nombre
+        )
+        if err_cd:
+            errores.append(err_cd)
+
+        return errores
+
+
 
         # -------------------------------------------------------
         # VERSIÓN DEL CONTRATO
